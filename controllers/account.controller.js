@@ -6,10 +6,60 @@ import { User } from "../models/user.js";
 import Category from "../models/category.js";
 import Tag from "../models/tag.js";
 import TransactionType from "../models/transactionType.js";
-import { classifyTransaction } from "../utils/transactionClassifier.js";
+import { findRuleMatch } from "../utils/ruleMatcher.js";
 import { returnResponse } from "../utils/specialUtils.js";
 
 const parseAmount = (value) => (value ? value.replaceAll(",", "").trim() : "0.00");
+
+const normalizeParsedValue = (value) => {
+	const normalized = String(value ?? "").trim();
+	return normalized || undefined;
+};
+
+export const parsePaymentDetails = (description = "") => {
+	const rawDescription = String(description ?? "").trim();
+
+	if (!rawDescription) {
+		return { type: "UNKNOWN", raw: rawDescription };
+	}
+
+	if (rawDescription.toUpperCase().startsWith("UPI/")) {
+		const segments = rawDescription.split("/").map((segment) => segment.trim()).filter(Boolean);
+		const fromAddress = segments.find((segment) => segment.toLowerCase().startsWith("from:"));
+		const toAddress = segments.find((segment) => segment.toLowerCase().startsWith("to:"));
+
+		return {
+			type: "UPI",
+			fromAddress: normalizeParsedValue(fromAddress?.replace(/^from:/i, "")),
+			toAddress: normalizeParsedValue(toAddress?.replace(/^to:/i, "")),
+			reference: normalizeParsedValue(segments[1]),
+			raw: rawDescription,
+		};
+	}
+
+	if (rawDescription.toUpperCase().startsWith("NEFT")) {
+		const parts = rawDescription
+			.replace(/^NEFT\s+/i, "")
+			.split("-")
+			.map((part) => part.trim())
+			.filter(Boolean);
+
+		if (parts.length >= 4) {
+			return {
+				type: "NEFT",
+				bankCode: normalizeParsedValue(parts[1]),
+				counterpartyName: normalizeParsedValue(parts.slice(2, -1).join(" ").replace(/\s+/g, " ")),
+				reference: normalizeParsedValue(parts[parts.length - 1]),
+				raw: rawDescription,
+			};
+		}
+	}
+
+	return {
+		type: "UNKNOWN",
+		raw: rawDescription,
+	};
+};
 
 const getStatementDates = (rows) => {
 	const dates = rows.map((row) => new Date(row.transactionDate));
@@ -32,11 +82,7 @@ const fromCents = (cents) => {
 	return `${sign}${absoluteCents / 100n}.${(absoluteCents % 100n).toString().padStart(2, "0")}`;
 };
 
-const getOrCreateLookup = (Model, name) => Model.findOneAndUpdate(
-	{ name },
-	{ $setOnInsert: { name } },
-	{ upsert: true, new: true, setDefaultsOnInsert: true }
-);
+	const getLookupDocuments = async (Model) => Model.find({}).lean();
 
 const createTransactionHash = (transaction) => {
 	const hashInput = [
@@ -92,29 +138,49 @@ export const uploadStatement = async (req, res) => {
 			return returnResponse(res, 400, false, "CSV file contains no transactions");
 		}
 
-		const transactions = await Promise.all(rows.map(async (row) => {
-			const { category, tag, type } = classifyTransaction(row);
-			const [categoryDocument, tagDocument, typeDocument] = await Promise.all([
-				getOrCreateLookup(Category, category),
-				getOrCreateLookup(Tag, tag),
-				getOrCreateLookup(TransactionType, type),
-			]);
+		const [categories, tags, transactionTypes] = await Promise.all([
+			getLookupDocuments(Category),
+			getLookupDocuments(Tag),
+			getLookupDocuments(TransactionType),
+		]);
+
+		const transactions = rows.map((row) => {
+			const typeDocument = findRuleMatch(transactionTypes, row);
+			const type = typeDocument?.name || "UNKNOWN";
+			const categoryDocument = type === "EXPENSE" ? findRuleMatch(categories, row) : null;
+			const tagDocument = findRuleMatch(tags, row);
+			const paymentDetails = parsePaymentDetails(row.description);
 			const transaction = {
 				...row,
-				category,
-				tag,
+				category: categoryDocument?.name || null,
+				tag: tagDocument?.name || null,
 				type,
+				paymentDetails,
 			};
 
 			return {
 				...transaction,
-				category: categoryDocument._id,
-				tag: tagDocument._id,
-				type: typeDocument._id,
+				category: categoryDocument?._id || null,
+				tag: tagDocument?._id || null,
+				type: typeDocument?._id || null,
 				statementKey,
 				hash: createTransactionHash(transaction),
 			};
-		}));
+		});
+
+		const hashesToCheck = [...new Set(transactions.map((transaction) => transaction.hash))];
+		const existingHashes = new Set(
+			(await Transaction.find({ hash: { $in: hashesToCheck } }, { hash: 1 }).lean()).map(({ hash }) => hash)
+		);
+		const seenHashes = new Set();
+		const uniqueTransactions = transactions.filter((transaction) => {
+			if (existingHashes.has(transaction.hash) || seenHashes.has(transaction.hash)) {
+				return false;
+			}
+
+			seenHashes.add(transaction.hash);
+			return true;
+		});
 
 		const { startDate, endDate } = getStatementDates(rows);
 		const openingRow = rows.reduce((earliest, row) => (
@@ -132,9 +198,11 @@ export const uploadStatement = async (req, res) => {
 		let savedTransactions;
 
 		try {
-			savedTransactions = await Transaction.insertMany(transactions, {
-				ordered: false,
-			});
+			savedTransactions = uniqueTransactions.length
+				? await Transaction.insertMany(uniqueTransactions, {
+					ordered: false,
+				})
+				: [];
 		} catch (error) {
 			if (error.code !== 11000) {
 				throw new Error("Failed to insert transactions into the database", {
@@ -168,7 +236,7 @@ export const uploadStatement = async (req, res) => {
 			res,
 			201,
 			true,
-			savedTransactions.length === transactions.length
+			savedTransactions.length === uniqueTransactions.length
 				? "Transactions imported successfully"
 				: "Transactions imported; duplicate transactions were skipped",
 			{

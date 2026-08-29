@@ -6,6 +6,7 @@ import cors from 'cors';
 import { returnResponse } from "./utils/specialUtils.js";
 import fileUpload from "express-fileupload";
 import accountRoutes from "./routes/account.routes.js";
+import transactionRoutes from "./routes/transaction.routes.js";
 
 
 dotenv.config();
@@ -28,7 +29,7 @@ app.use(fileUpload({
     tempFileDir: '/tmp'
 }));
 app.use("/api/account", accountRoutes);
-
+app.use("/api/transaction", transactionRoutes);
 
 app.get('/', (req,res) => {
     return returnResponse(res,200,true,"Your server is up and running...");

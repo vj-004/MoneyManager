@@ -14,20 +14,52 @@ const splitSchema = new mongoose.Schema(
 		category: {
 			type: mongoose.Schema.Types.ObjectId,
 			ref: "Category",
-			required: true,
 		},
 		tag: {
 			type: mongoose.Schema.Types.ObjectId,
 			ref: "Tag",
-			required: true,
 		},
 		type: {
 			type: mongoose.Schema.Types.ObjectId,
 			ref: "TransactionType",
-			required: true,
 		},
 	},
 	{ _id: true, timestamps: true }
+);
+
+const paymentDetailsSchema = new mongoose.Schema(
+	{
+		type: {
+			type: String,
+			enum: ["UPI", "NEFT", "UNKNOWN"],
+			default: "UNKNOWN",
+		},
+		fromAddress: {
+			type: String,
+			trim: true,
+		},
+		toAddress: {
+			type: String,
+			trim: true,
+		},
+		counterpartyName: {
+			type: String,
+			trim: true,
+		},
+		bankCode: {
+			type: String,
+			trim: true,
+		},
+		reference: {
+			type: String,
+			trim: true,
+		},
+		raw: {
+			type: String,
+			trim: true,
+		},
+	},
+	{ _id: false }
 );
 
 const transactionSchema = new mongoose.Schema(
@@ -57,17 +89,18 @@ const transactionSchema = new mongoose.Schema(
 		category: {
 			type: mongoose.Schema.Types.ObjectId,
 			ref: "Category",
-			required: true,
 		},
 		tag: {
 			type: mongoose.Schema.Types.ObjectId,
 			ref: "Tag",
-			required: true,
 		},
 		type: {
 			type: mongoose.Schema.Types.ObjectId,
 			ref: "TransactionType",
-			required: true,
+		},
+		paymentDetails: {
+			type: paymentDetailsSchema,
+			default: {},
 		},
 		hash: {
 			type: String,

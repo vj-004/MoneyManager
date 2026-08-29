@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { classificationRuleSchema } from "./classificationRule.js";
 
 const categorySchema = new mongoose.Schema(
 	{
@@ -7,6 +8,10 @@ const categorySchema = new mongoose.Schema(
 			required: true,
 			unique: true,
 			trim: true,
+		},
+		rules: {
+			type: [classificationRuleSchema],
+			default: [],
 		},
 	},
 	{
